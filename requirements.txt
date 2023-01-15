@@ -1,0 +1,10 @@
+gymnasium[classic-control]
+pandas
+black
+torch
+tensorboard
+Fire
+pre-commit
+isort
+flake8
+pylint

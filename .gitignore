@@ -1,0 +1,10 @@
+__pycache__
+.idea*
+venv
+*.pyc
+build
+.ipynb_checkpoints
+.vscode
+.nfs*
+exp
+exp_*
