@@ -42,13 +42,15 @@ class ReplayBuffer:
 
 
 class Metrics:
-    def __init__(self, prefix, summary_writer, log_every_step=1):
+    def __init__(self, prefix, summary_writer, log_every_step=1, log_every_ep=1):
         pass
         self.ep_metrics = defaultdict(list)
+        self.step_metrics = {}
         self.agg_methods = {}
         self.possible_agg_methods = ["mean", "sum"]
         self.prefix = prefix
         self.log_every_step = log_every_step
+        self.log_every_ep = log_every_ep
 
         self.writer = summary_writer
 
@@ -58,11 +60,14 @@ class Metrics:
         self.agg_methods[name] = agg_method
         self.ep_metrics[name].append(value)
 
-    def add_step_metric(self, name, value, step):
-        if step % self.log_every_step == 0:
-            if hasattr(self, "writer"):
-                tag = f"{self.prefix}/{name}"
-                self.writer.add_scalar(tag, value, step)
+    def add_step_metric(self, name, value):
+        self.step_metrics[name] = value
+
+    def log_step(self, step):
+        for k, v in self.step_metrics.items():
+            tag = f"{self.prefix}/{k}"
+            self.writer.add_scalar(tag, v, step)
+        self.step_metrics = {}
 
     def aggregate_episode(self):
         self.agg = {}
@@ -78,9 +83,10 @@ class Metrics:
         msg += f"episode: {episode} "
         msg += f"step: {step} "
         msg += " ".join([f"{k}: {v:.5f}" for k, v in self.agg.items()])
-        logger.info(msg)
 
-        if hasattr(self, "writer"):
+        if episode % self.log_every_ep == 0:
+            logger.info(msg)
+
             for k, v in self.agg.items():
                 tag = f"{self.prefix}_ep/{k}"
                 self.writer.add_scalar(tag, v, episode)

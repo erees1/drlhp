@@ -75,13 +75,13 @@ def override_config_with_kwargs(config, kwargs):
     return config
 
 
-def validate_on_hold_out_states(agent, val_bsz, hold_out_states, step, validation_metrics):
+def validate_on_hold_out_states(agent, val_bsz, hold_out_states, validation_metrics):
     all_Q_values = []
     for state in hold_out_states.split(val_bsz):
         Q_values = agent.get_max_Q_values(state)
         all_Q_values.append(Q_values)
     all_Q_values = torch.cat(all_Q_values)
-    validation_metrics.add_step_metric("holdout_mean_Q", all_Q_values.mean().item(), step)
+    validation_metrics.add_step_metric("holdout_mean_Q", all_Q_values.mean().item())
 
 
 def train(
@@ -99,6 +99,7 @@ def train(
     key_params = []
     key_params.append(f"algo-{config['agent']['type']}")
     key_params.append(f"loss-{config['agent']['loss']}")
+    key_params.append(f"seed-{config['seed']}")
     exp_dir += f"_{'_'.join(key_params)}"
     tb_dir = f"{exp_dir}/tb"
 
@@ -139,7 +140,7 @@ def train(
         while not done:
             observation, done, _ = environment_step(agent, env, observation, replay_buffer)
 
-    training_metrics = Metrics("train", tb_writer, training_config["log_every"])
+    training_metrics = Metrics("train", tb_writer)
     validation_metrics = Metrics("val", tb_writer)
 
     # Training loop
@@ -156,17 +157,21 @@ def train(
             agent.update(batch, training_metrics)
             training_metrics.add_episode_metric("episode_reward", reward, "sum")
 
+            if agent.steps_trained % training_config["log_step_every"] == 0:
+                training_metrics.log_step(agent.steps_trained)
+
             if agent.steps_trained % training_config["val_every"] == 0:
                 validate_on_hold_out_states(
                     agent,
                     training_config["batch_size"],
                     hold_out_states,
-                    agent.steps_trained,
                     validation_metrics,
                 )
+                validation_metrics.log_step(agent.steps_trained)
 
         training_metrics.aggregate_episode()
-        training_metrics.log_episode(i_episode, agent.steps_trained)
+        if i_episode % training_config["log_ep_every"] == 0:
+            training_metrics.log_episode(i_episode, agent.steps_trained)
         i_episode += 1
 
         if agent.steps_trained > training_config["n_steps"]:

@@ -104,9 +104,9 @@ class DQNAgent:
         # record relevant metrics for logging and tensorboard
         metrics.add_episode_metric("episode_mean_Q", torch.mean(pred_Q_values).item(), "mean")
         metrics.add_episode_metric("episode_mean_loss", loss.item(), "mean")
-        metrics.add_step_metric("loss", loss.item(), self.steps_trained)
-        metrics.add_step_metric("epsilon", self.exploration_schedule.epsilon, self.steps_trained)
-        metrics.add_step_metric("lr", self.optimizer.param_groups[0]["lr"], self.steps_trained)
+        metrics.add_step_metric("loss", loss.item())
+        metrics.add_step_metric("epsilon", self.exploration_schedule.epsilon)
+        metrics.add_step_metric("lr", self.optimizer.param_groups[0]["lr"])
 
         self.steps_trained += 1
 
