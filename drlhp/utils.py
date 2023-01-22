@@ -136,3 +136,14 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def flatten_dict(d, sep="."):
+    # return list of tuples of (key.key2, value)
+    out = []
+    for k, v in d.items():
+        if isinstance(v, dict):
+            out.extend([(k + sep + k2, v2) for k2, v2 in flatten_dict(v, sep)])
+        else:
+            out.append((k, v))
+    return out

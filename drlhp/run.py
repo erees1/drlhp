@@ -1,3 +1,4 @@
+import itertools
 import logging
 import os
 import random
@@ -10,7 +11,7 @@ import yaml as yaml
 from agents import get_agent_class
 from fire import Fire
 from torch.utils.tensorboard import SummaryWriter
-from utils import Metrics, ReplayBuffer, seed_everything
+from utils import Metrics, ReplayBuffer, flatten_dict, seed_everything
 
 logger = logging.getLogger()
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -33,17 +34,15 @@ def parse_config(config):
         return yaml.safe_load(f)
 
 
-def log_config_to_tb(config, writer):
-    def flatten_dict(d, sep="."):
-        # return list of tuples of (key.key2, value)
-        out = []
-        for k, v in d.items():
-            if isinstance(v, dict):
-                out.extend([(k + sep + k2, v2) for k2, v2 in flatten_dict(v, sep)])
-            else:
-                out.append((k, v))
-        return out
+def get_short_config_key_name(config_key):
+    lookup = {
+        "agent.loss": "loss",
+        "agent.optimizer.lr": "lr",
+    }
+    return lookup[config_key]
 
+
+def log_config_to_tb(config, writer):
     for k, v in flatten_dict(config):
         try:
             v_as_num = float(v)
@@ -85,22 +84,52 @@ def validate_on_hold_out_states(agent, val_bsz, hold_out_states, validation_metr
 
 
 def train(
-    env: str = "CartPole-v1",
-    config: str = "./drlhp/configs/dqn_fixed_target.yaml",
-    exp_root="./exp",
+    env: str,
+    algo: str,
+    exp_name: str,
+    exp_root: str,
+    sweep_params: list = None,
     **kwargs,
 ):
 
+    config: str = f"./drlhp/configs/{algo}.yaml"
     config = parse_config(config)
+
+    if "help" in kwargs:
+        print("Available configs:")
+        for f in os.listdir("./drlhp/configs"):
+            print(f)
+
+        print(f"Available parameters for selected algo {algo}:")
+        for k, v in flatten_dict(config):
+            print(f"--{k}: {v} (default)")
+
+        exit(0)
+
     config = override_config_with_kwargs(config, kwargs)
 
-    current_date_and_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    exp_dir = f"{exp_root}/{env}/{current_date_and_time}"
-    key_params = []
-    key_params.append(f"algo-{config['agent']['type']}")
-    key_params.append(f"loss-{config['agent']['loss']}")
-    key_params.append(f"seed-{config['seed']}")
-    exp_dir += f"_{'_'.join(key_params)}"
+    # Construt the exp dir path similar to openai spinup
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_time = datetime.now().strftime("%H-%M-%S")
+    agent_name = config["agent"]["type"]
+    if exp_name is None:
+        exp_name = f"{env}_{agent_name}"
+    parent_dir = f"{current_date}_{exp_name}"
+    inner_dir = f"{current_time}"
+
+    if len(sweep_params) > 0:
+        suffix = ""
+        for p in sweep_params:
+            if p == "seed":
+                # already added to inner_dir
+                continue
+            short_name = get_short_config_key_name(p)
+            suffix += f"_{short_name}_{config[p]}"
+        inner_dir += suffix
+        parent_dir += suffix
+    inner_dir += f"_s{config['seed']}"
+
+    exp_dir = f"{exp_root}/{parent_dir}/{inner_dir}"
     tb_dir = f"{exp_dir}/tb"
 
     os.makedirs(tb_dir, exist_ok=True)
@@ -109,6 +138,9 @@ def train(
     # Log config to exp dir and tensorboard
     with open(f"{exp_dir}/config.yaml", "w") as f:
         yaml.dump(config, f)
+    with open(f"{exp_dir}/env", "w") as f:
+        print(env, file=f)
+
     log_config_to_tb(config, tb_writer)
 
     training_config = config["training"]
@@ -177,8 +209,77 @@ def train(
         if agent.steps_trained > training_config["n_steps"]:
             break
 
+    # Save model
+    agent.save_model(exp_dir + "/model.pt")
+
+    env.close()
+
+
+def create_param_grid(kwargs):
+    # Get all parameters in kwargs that are tuples
+    combinations = []
+    sweep_parameters = []
+    for k, v in kwargs.items():
+        if isinstance(v, tuple):
+            if k not in sweep_parameters:
+                sweep_parameters.append(k)
+            values_to_try = []
+            for v_ in v:
+                values_to_try.append((k, v_))
+            combinations.append(values_to_try)
+
+    # For every possible combination of parameters, create a new set of kwargs
+    param_sets = list(itertools.product(*combinations))
+    new_kwargs = []
+    for param_set in param_sets:
+        new_kwargs.append(kwargs.copy())
+        for k, v in param_set:
+            new_kwargs[-1][k] = v
+
+    return new_kwargs, sweep_parameters
+
+
+def main(
+    env: str,
+    algo: str,
+    exp_name: str = None,
+    exp_root="./exp",
+    **kwargs,
+):
+    param_sets, sweep_parameters = create_param_grid(kwargs)
+    for kwargs in param_sets:
+        train(env, algo, exp_name, exp_root, sweep_parameters, **kwargs)
+
+
+def demo(exp_dir, demo_eps=10, render_mode="human", seed=1, log_to_tb=False):
+
+    seed_everything(seed)
+
+    config = parse_config(exp_dir + "/config.yaml")
+    with open(exp_dir + "/env", "r") as f:
+        env_name = f.read().strip()
+    env = gym.make(env_name, render_mode=render_mode)
+    observation_size = sum(env.observation_space.shape)
+    action_space = env.action_space.n
+    Agent = get_agent_class(config["agent"]["type"])
+    agent = Agent(observation_size, action_space, config["agent"])
+    agent.load_model(exp_dir + "/model.pt")
+
+    agent.eval()
+    agent.set_explore(False)
+
+    for _ in range(demo_eps):
+
+        observation, _ = env.reset(seed=reseed())
+        done = False
+        r = 0
+        while not done:
+            observation, done, reward = environment_step(agent, env, observation)
+            r += reward
+        print(f"Episode reward: {r}")
+
     env.close()
 
 
 if __name__ == "__main__":
-    Fire(train)
+    Fire({"train": main, "demo": demo})

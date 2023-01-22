@@ -73,11 +73,20 @@ class DQNAgent:
 
         self.steps_trained = 0
 
-    def act(self, observation, explore=True):
+    def set_explore(self, explore: bool):
+        self.explore = explore
+
+    def training(self):
+        self.m.train()
+
+    def eval(self):
+        self.m.eval()
+
+    def act(self, observation):
 
         epsilon = self.exploration_schedule.epsilon
 
-        if explore and random.random() < epsilon:
+        if self.explore and random.random() < epsilon:
             # Sample random action
             action = random.randint(0, self.action_space_size - 1)
         else:
@@ -119,6 +128,12 @@ class DQNAgent:
         Q_values = self.m(obs)
         max_Q_values = torch.max(Q_values, axis=-1).values
         return max_Q_values
+
+    def save_model(self, path):
+        torch.save(self.m.state_dict(), path)
+
+    def load_model(self, path):
+        self.m.load_state_dict(torch.load(path))
 
 
 class DQNFixedTarget(DQNAgent):
