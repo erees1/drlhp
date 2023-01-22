@@ -1,5 +1,5 @@
 agent:
-  discount_factor: 0.985
+  discount_factor: 0.98
   exploration:
     profile: exponential
     decay_steps: 3_000
@@ -7,21 +7,22 @@ agent:
     epsilon_min: 0.1
   optimizer:
     name: AdamW
-    lr: 9e-5
+    lr: 3e-4
     decay_steps: 100_000
     warmup_steps: 0
   max_grad_norm: 1
-  loss: "mse"
+  loss: "huber"
   model:
     hidden_dim: 128
     n_layers: 1
   type: dqn_fixed_target
-  tau: 0.004
-replay_buffer_size: 10_000
+  tau: 0.005
+replay_buffer_size: 20_000
 seed: 1
 training:
   batch_size: 128
-  log_every: 30
+  log_step_every: 30
+  log_ep_every: 5
   n_steps: 100_000
   n_val_states: 10000
   val_every: 1000
