@@ -72,6 +72,7 @@ class DQNAgent:
             raise ValueError(f"Unknown loss {config['loss']}")
 
         self.steps_trained = 0
+        self.set_explore(True)
 
     def set_explore(self, explore: bool):
         self.explore = explore
