@@ -2,22 +2,23 @@ import itertools
 import os
 from dataclasses import asdict
 from datetime import datetime
+from typing import Optional, Any
 
 import yaml as yaml
 from fire import Fire
 from ppo import PPOConfig, train_ppo
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from utils import seed_everything
 
 
-def get_agent_config(type):
+def get_agent_config(type: str):
     if type == "ppo":
         return PPOConfig
     else:
         raise NotImplementedError(f"Agent type {type} not implemented")
 
 
-def log_config_to_tb(config, writer):
+def log_config_to_tb(config: PPOConfig, writer: SummaryWriter):
     for k, v in asdict(config).items():
         try:
             v_as_num = float(v)
@@ -26,7 +27,14 @@ def log_config_to_tb(config, writer):
             writer.add_text(f"z_meta/{k}", v)
 
 
-def make_exp_dir_path(exp_root, env, algo, config, exp_name=None, passed_kwargs=None):
+def make_exp_dir_path(
+    exp_root: str,
+    env: str,
+    algo: str,
+    config: PPOConfig,
+    exp_name: Optional[str] = None,
+    passed_kwargs: Optional[dict[str, Any]] = None,
+):
     if passed_kwargs is None:
         passed_kwargs = {}
     # Construt the exp dir path similar to openai spinup
@@ -51,10 +59,9 @@ def train(
     algo: str,
     exp_name: str,
     exp_root: str,
-    help=False,
-    **kwargs,
+    help: bool = False,
+    **kwargs,  # type: ignore
 ):
-
     Config = get_agent_config(algo)
 
     if help:
@@ -92,10 +99,10 @@ def train(
         raise ValueError(f"Unknown algorithm {algo}")
 
 
-def create_param_grid(kwargs):
+def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:  # type: ignore
     # Get all parameters in kwargs that are tuples
     combinations = []
-    sweep_parameters = []
+    sweep_parameters: list[str] = []
     for k, v in kwargs.items():
         if isinstance(v, tuple):
             if k not in sweep_parameters:
@@ -120,15 +127,15 @@ def create_param_grid(kwargs):
 
 def main(
     algo: str = "ppo",
-    env: str = "PongNoFrameskip-v4",
-    exp_name: str = None,
-    exp_root="./exp",
-    config_help=False,
-    **kwargs,
+    env: str = "CartPole-v1",
+    exp_name: Optional[str] = None,
+    exp_root: str = "./exp",
+    config_help: bool = False,
+    **kwargs,  # type: ignore
 ):
     param_sets, _ = create_param_grid(kwargs)
     for kwargs in param_sets:
-        train(env, algo, exp_name, exp_root, help=config_help, **kwargs)
+        train(env, algo, exp_name, exp_root, help=config_help, **kwargs)  # type: ignore
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
+from dataclasses import dataclass
 import logging
 import math
 import random
 from functools import partial
+from typing import Callable, Optional, Union
 
 import gymnasium as gym
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import _LRScheduler
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter  # type: ignore
 
 logger = logging.getLogger()
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -25,8 +27,8 @@ def reseed():
 class WarmupCA(_LRScheduler):
     def __init__(
         self,
-        optimizer,
-        steps,
+        optimizer: torch.optim.Optimizer,
+        steps: int,
         eta_min=1e-7,
         warmup_steps=2000,
         decay_factor=10,
@@ -39,12 +41,12 @@ class WarmupCA(_LRScheduler):
 
         super().__init__(optimizer, -1)
 
-    def main_lr(self, base_lr, step):
+    def main_lr(self, base_lr: float, step: int) -> float:
         return (base_lr / self.decay_factor) + (base_lr - (base_lr / self.decay_factor)) * (
             1 + math.cos(math.pi * (step - self.start_step) / self.T_max)
         ) / 2
 
-    def get_lr(self):
+    def get_lr(self) -> list[float]:  # type: ignore
         lr_list = []
 
         for base_lr in self.base_lrs:
@@ -57,11 +59,11 @@ class WarmupCA(_LRScheduler):
                 lr_list.append(self.main_lr(base_lr, self._step_count))
         return lr_list
 
-    def set_step(self, step):
+    def set_step(self, step: int):
         self._step_count = step
 
 
-def seed_everything(seed):
+def seed_everything(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -69,7 +71,9 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def log_metrics(meta: dict, step: int, prefix, writer: SummaryWriter = None, log=False):
+def log_metrics(
+    meta: dict[str, float | int], step: int, prefix: str, writer: Optional[SummaryWriter] = None, log: bool = False
+):
     if log:
         msg = f"{prefix}: {step} "
         for k, v in meta.items():
@@ -85,15 +89,22 @@ def log_metrics(meta: dict, step: int, prefix, writer: SummaryWriter = None, log
             # handles the case where avg_reward is nan
             # because episode didn't finish
             continue
-        writer.add_scalar(tag, v, step)
+        if writer is not None:
+            writer.add_scalar(tag, v, step)
 
 
-def _get_indvidual_env(env_name, render=False, n_envs=1):
-    render_mode = "rgb_array" if render else None
+def _get_indvidual_env(
+    env_name: str,
+    render: bool = False,
+) -> gym.Env | gym.wrappers.FrameStack:  # type: ignore
+    if render:
+        render_mode = "rgb_array"
+    else:
+        render_mode = None
     if "Pong" in env_name:
         env = gym.make(f"{env_name}", render_mode=render_mode)
         # Atari preprocessing wrapper
-        env = gym.wrappers.AtariPreprocessing(
+        env = gym.wrappers.AtariPreprocessing(  # type: ignore
             env,
             noop_max=30,
             frame_skip=4,
@@ -104,54 +115,52 @@ def _get_indvidual_env(env_name, render=False, n_envs=1):
             scale_obs=False,
         )
         # Frame stacking
-        env = gym.wrappers.FrameStack(env, 4)
+        env: gym.wrappers.FrameStack = gym.wrappers.FrameStack(env, 4)  # type: ignore
         return env
 
-    env = gym.make(env_name, render_mode=render_mode)
+    env: gym.Env = gym.make(env_name, render_mode=render_mode)  # type: ignore
     return env
 
 
-def get_vec_env(env_name, render=False, n_envs=1, use_async=False):
-    envs = [partial(_get_indvidual_env, env_name, render=(i == 0) * render) for i in range(n_envs)]
+def get_vec_env(env_name: str, render: bool = False, n_envs: int = 1, use_async: bool = False) -> gym.vector.VectorEnv:
+    envs = [partial(_get_indvidual_env, env_name, render=bool((i == 0) * render)) for i in range(n_envs)]
     if use_async:
         envs = gym.vector.AsyncVectorEnv(envs)
     else:
         envs = gym.vector.SyncVectorEnv(envs)
-    envs.env_name = env_name
+
+    envs.env_name = env_name  # type: ignore
     return envs
 
 
-def get_env_name(env):
+def get_env_name(env: Union[gym.vector.AsyncVectorEnv, gym.vector.SyncVectorEnv]) -> str:
     if isinstance(env, gym.vector.AsyncVectorEnv) or isinstance(env, gym.vector.SyncVectorEnv):
-        return env.envs[0].spec.id
+        return env.envs[0].spec.id  # type: ignore
     else:
         return env.spec.id
 
 
-def get_batches_from_trajectories(flattened_trajectories, batch_size):
-
-    indices = np.random.permutation(len(flattened_trajectories["observations"]))
-    for start_idx in range(0, len(flattened_trajectories["observations"]), batch_size):
-        batch = {}
-        end_idx = start_idx + batch_size
-        minibatch_indices = indices[start_idx:end_idx]
-
-        for k, v in flattened_trajectories.items():
-            if isinstance(v, list):
-                batch[k] = torch.from_numpy(np.array([v[i] for i in minibatch_indices]))
-            else:
-                batch[k] = v[minibatch_indices]
-        yield batch
-
-
-def process_observations(obs, add_batch_dim=False, scale=False):
-
-    # convert to torch tensor
-    obs = torch.from_numpy(np.array(obs))
-
+def _process_observations(obs: torch.Tensor, add_batch_dim: bool = False, scale: bool = False) -> torch.Tensor:
     if scale:
         obs = obs.float() / 255.0
 
     if add_batch_dim:
         obs = obs.unsqueeze(0)
     return obs
+
+
+def get_observation_processing_func(env_name: str) -> Callable[[torch.Tensor], torch.Tensor]:
+    if "Pong" in env_name:
+        return partial(_process_observations, scale=True)
+    else:
+        return _process_observations
+
+
+@dataclass
+class Trajectories:
+    observations: torch.Tensor
+    next_observations: torch.Tensor
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    log_probs: torch.Tensor
+    dones: torch.Tensor

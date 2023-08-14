@@ -1,20 +1,23 @@
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import asdict, dataclass
+from typing import Callable, Generator
 
 import numpy as np
+from numpy.typing import NDArray
 import torch
+from gymnasium.vector import VectorEnv
+from utils import Trajectories
+from interface import SegmentInterface
 from models import CNN, MLP
+from torch import Tensor
 from torch.nn import functional as F
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter  # type: ignore
 from utils import (
     WarmupCA,
-    get_batches_from_trajectories,
-    get_env_name,
+    get_observation_processing_func,
     get_vec_env,
     log_metrics,
-    process_observations,
     reseed,
 )
 
@@ -30,8 +33,8 @@ class PPOConfig:
     critic_hidden_dim: int = 128
     critic_n_layers: int = 1
     seed: int = 1
-    steps_per_update: int = 6400
-    n_timesteps: int = 1e6
+    steps_per_update: int = 640
+    n_timesteps: int = int(1e6)
     optimization_epochs: int = 10
     batch_size: int = 32
     log_every: int = 100
@@ -39,10 +42,34 @@ class PPOConfig:
     clip_epsilon: float = 0.2
     value_loss_coeff: float = 0.5
     render_every: int = 5
-    n_envs: int = 32
+    n_envs: int = 1
     gamma: float = 0.99
     tau: float = 0.95
     grad_clip: float = 0.5
+    use_async_env: bool = False
+
+
+@dataclass
+class StepMetaInformation:
+    policy_loss: float
+    value_loss: float
+    entropy_bonus: float
+    loss: float
+
+
+class StepMetaInformationHistory:
+    def __init__(self, max_len: int):
+        self.history: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=max_len))
+
+    def add(self, meta: StepMetaInformation):
+        for k, v in asdict(meta).items():
+            self.history[f"{k}_avg"].append(v)
+
+    def dict(self) -> dict[str, float]:
+        output: dict[str, float] = {}
+        for k, v in self.history.items():
+            output[k] = float(np.mean(list(v)))
+        return output
 
 
 class PPOAgent:
@@ -83,24 +110,24 @@ class PPOAgent:
 
         # scheudler is stepped every update so the max num of updates is equal to
         #  config.n_timesteps * config.optimization_epochs / bsz
-        scheduler_steps = config.n_timesteps * config.optimization_epochs / config.batch_size
+        scheduler_steps = int(config.n_timesteps * config.optimization_epochs / config.batch_size)
         self.scheduler = WarmupCA(self.optimizer, scheduler_steps, eta_min=1e-7, warmup_steps=2000, decay_factor=10)
 
         self.steps_trained = 0
 
-    def get_lr(self):
+    def get_lr(self) -> list[float]:
         return self.scheduler.get_lr()
 
-    def set_step_for_lr(self, step):
+    def set_step_for_lr(self, step: int):
         self.scheduler.set_step(step)
 
-    def compute_gae(self, observations, next_observations, rewards, dones):
+    def compute_gae(self, observations: Tensor, next_observations: Tensor, rewards: Tensor, dones: Tensor):
         # atarti:
         # observations: (trajectory_length, n_envs, 4, 84, 84)
         # cartpole:
         # observations: (trajectory_length, n_envs, 4)
+        traj_length, n_envs = observations.shape[:2]
         if len(observations.shape) == 5:
-            traj_length, n_envs = observations.shape[:2]
             observations = observations.view(-1, *observations.shape[2:])
             next_observations = next_observations.view(-1, *next_observations.shape[2:])
 
@@ -130,17 +157,19 @@ class PPOAgent:
 
         return advantages, returns
 
-    def act(self, observation: torch.Tensor):
+    def act(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         dist = self.get_action_dist(observation)
         action = dist.sample()
         return action, dist.log_prob(action)
 
-    def get_action_dist(self, observation: torch.Tensor):
+    def get_action_dist(self, observation: Tensor):
         logits_a = self.actor(observation)
         dist = torch.distributions.Categorical(logits=logits_a)
         return dist
 
-    def update_step(self, observations, actions, returns, advantages, log_probs):
+    def update_step(
+        self, observations: Tensor, actions: Tensor, returns: Tensor, advantages: Tensor, log_probs: Tensor
+    ) -> StepMetaInformation:
         new_log_probs, values = self.evaluate(observations, actions)
 
         # Calculate the policy ratio
@@ -162,22 +191,21 @@ class PPOAgent:
         self.optimizer.zero_grad()
         loss.backward()
         # clip gradients
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.grad_clip)
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.grad_clip)  # type: ignore
         self.optimizer.step()
         self.scheduler.step()
 
         self.steps_trained += 1
 
-        # Update training metrics
-        meta = {
-            "policy_loss": policy_loss.item(),
-            "value_loss": value_loss.item(),
-            "entropy_bonus": entropy_bonus.item(),
-            "loss": loss.item(),
-        }
+        meta = StepMetaInformation(
+            policy_loss=policy_loss.item(),
+            value_loss=value_loss.item(),
+            entropy_bonus=entropy_bonus.item(),
+            loss=loss.item(),
+        )
         return meta
 
-    def evaluate(self, observations, actions):
+    def evaluate(self, observations: Tensor, actions: Tensor) -> tuple[Tensor, Tensor]:
         assert len(actions.shape) == 1
         # Get the normalized log probabilities for the observations
         policy_log_probs = self.get_action_dist(observations)
@@ -190,37 +218,59 @@ class PPOAgent:
         return policy_log_probs, value_estimates
 
 
+@dataclass
+class FlatPPOTrajectory:
+    observations: Tensor
+    next_observations: Tensor
+    actions: Tensor
+    rewards: Tensor
+    log_probs: Tensor
+    dones: Tensor
+    advantages: Tensor
+    returns: Tensor
+
+
 class Runner:
-    def __init__(self, env, agent: PPOAgent, trajectory_length):
+    """
+    Iterable that collects trajectories from the environment and computes advantages and returns
+    and returns flattened trajectories of torch tensors
+    """
+
+    def __init__(
+        self,
+        env: VectorEnv,
+        agent: PPOAgent,
+        trajectory_length: int,
+        process_func: Callable[[Tensor], Tensor],
+    ):
         self.env = env
         self.agent = agent
         self.trajectory_length = trajectory_length
         self.single_env_length = trajectory_length // env.num_envs
+        self.renderings = []
 
-        env_name = get_env_name(env)
-        if "Pong" in env_name:
-            self.process_func = partial(process_observations, scale=True)
-        else:
-            self.process_func = process_observations
+        self.process_func = process_func
 
-    def _flatten_trajectory(self, trajectories):
-        # squeeze the trajectory and n_envs dimension into 1
-        flattened_trajectories = {}
-        for k, v in trajectories.items():
-            remaining_dims = v.shape[2:]
-            flattened_trajectories[k] = v.view(v.shape[0] * v.shape[1], *remaining_dims)
-        return flattened_trajectories
+    def collect_renderings(self) -> list[NDArray[np.int32]]:
+        output = self.renderings
+        self.renderings = []
+        return output
 
-    def _collect_trajectories(self):
+    def _collect_trajectories(self) -> Generator[tuple[Trajectories, list[int]], None, None]:
         observations, next_observations, actions, rewards, log_probs, dones = [], [], [], [], [], []
         ep_returns = []
 
+        observation: NDArray[np.float32]
         observation, _ = self.env.reset(seed=reseed())
         ep_reward = np.array([0.0] * self.env.num_envs)
+        render = True
         while True:
-
-            action, log_prob = self.agent.act(self.process_func(observation))
+            action, log_prob = self.agent.act(self.process_func(torch.from_numpy(observation)))
             next_observation, reward, done, truncation, _ = self.env.step(action.numpy())
+
+            if render:
+                rgb = self.env.envs[0].render()  # type: ignore
+                self.renderings.append(rgb)
 
             # Store trajectory data
             observations.append(observation)
@@ -236,95 +286,121 @@ class Runner:
             if done.any():
                 # finished envs
                 finished = np.argwhere(done)
+                render = False
                 for i in finished:
                     ep_returns.append(int(ep_reward[i]))
                     ep_reward[i] = 0
 
             if len(observations) >= self.single_env_length:
-                trajectories = {
-                    "observations": observations,
-                    "next_observations": next_observations,
-                    "actions": actions,
-                    "rewards": rewards,
-                    "log_probs": log_probs,
-                    "dones": dones,
-                }
+                trajectories = Trajectories(
+                    torch.from_numpy(np.stack(observations, axis=0)),
+                    torch.from_numpy(np.stack(next_observations, axis=0)),
+                    torch.from_numpy(np.stack(actions, axis=0)),
+                    torch.from_numpy(np.stack(rewards, axis=0)),
+                    torch.from_numpy(np.stack(log_probs, axis=0)),
+                    torch.from_numpy(np.stack(dones, axis=0)),
+                )
+
+                for v in asdict(trajectories).values():
+                    assert v.shape[:2] == (self.single_env_length, self.env.num_envs)
+
                 yield trajectories, ep_returns
                 observations, next_observations, actions, rewards, log_probs, dones = [], [], [], [], [], []
                 ep_returns = []
+                render = True
 
     def __iter__(self):
         for trajectories, ep_returns in self._collect_trajectories():
-            for k, v in trajectories.items():
-                arr = np.stack(v, axis=0)  # (trajectory_length, n_envs, ...)
-                assert arr.shape[:2] == (self.single_env_length, self.env.num_envs)
-                trajectories[k] = torch.from_numpy(arr)
-
+            # Compute advantages and returns
             advantages, returns = self.agent.compute_gae(
-                self.process_func(trajectories["observations"]),
-                self.process_func(trajectories["next_observations"]),
-                trajectories["rewards"],
-                trajectories["dones"],
+                self.process_func(trajectories.observations),
+                self.process_func(trajectories.next_observations),
+                trajectories.rewards,
+                trajectories.dones,
             )
-            trajectories["advantages"] = advantages
-            trajectories["returns"] = returns
 
-            flattened_trajectories = self._flatten_trajectory(trajectories)
-            advantages = flattened_trajectories["advantages"]
-            flattened_trajectories["advantages"] = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            def squeeze_tensor(v: Tensor) -> Tensor:
+                remaining_dims = v.shape[2:]
+                return v.view(v.shape[0] * v.shape[1], *remaining_dims)
 
-            yield flattened_trajectories, torch.tensor(ep_returns, dtype=torch.float32)
+            advantages = squeeze_tensor(advantages)
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+            ft = FlatPPOTrajectory(
+                observations=squeeze_tensor(self.process_func(trajectories.observations)),
+                next_observations=squeeze_tensor(self.process_func(trajectories.next_observations)),
+                actions=squeeze_tensor(trajectories.actions),
+                rewards=squeeze_tensor(trajectories.rewards),
+                log_probs=squeeze_tensor(trajectories.log_probs),
+                dones=squeeze_tensor(trajectories.dones),
+                advantages=advantages,
+                returns=squeeze_tensor(returns),
+            )
 
-class MetaHistory:
-    def __init__(self, max_len):
-        self.meta = defaultdict(lambda: deque(maxlen=max_len))
-
-    def add(self, meta):
-        for k, v in meta.items():
-            self.meta[f"{k}_avg"].append(v)
-
-    def items(self):
-        output = {}
-        for k, v in self.meta.items():
-            output[k] = np.mean(v)
-        return output.items()
+            yield ft, torch.tensor(ep_returns, dtype=torch.float32)
 
 
-def train_ppo(env_name, config: PPOConfig, writer: SummaryWriter):
+def get_batches_from_trajectories(
+    flattened_trajectories: FlatPPOTrajectory, batch_size: int
+) -> Generator[FlatPPOTrajectory, None, None]:
+    indices = np.random.permutation(len(flattened_trajectories.observations))
+    for start_idx in range(0, len(flattened_trajectories.observations), batch_size):
+        batch = {}
+        end_idx = start_idx + batch_size
+        minibatch_indices = indices[start_idx:end_idx]
 
-    meta_history = MetaHistory(max_len=config.log_every)
+        for k, v in asdict(flattened_trajectories).items():
+            batch[k] = torch.from_numpy(np.array([v[i] for i in minibatch_indices]))
 
-    env = get_vec_env(env_name, n_envs=config.n_envs)
-    observation_size = sum(env.single_observation_space.shape)
-    action_space = env.single_action_space.n
+        yield FlatPPOTrajectory(**batch)
+
+
+# class PreferenceInterface()
+
+
+def train_ppo(env_name: str, config: PPOConfig, writer: SummaryWriter):
+    step_history = StepMetaInformationHistory(max_len=config.log_every)
+
+    process_func = get_observation_processing_func(env_name)
+
+    env = get_vec_env(env_name, n_envs=config.n_envs, render=True, use_async=config.use_async_env)
+    observation_size: int = sum(env.single_observation_space.shape)  # type: ignore
+    action_space: int = env.single_action_space.n  # type: ignore
     agent = PPOAgent(observation_size, action_space, config, env_name)
-    runner = Runner(env, agent, config.steps_per_update)
+    runner = Runner(env, agent, config.steps_per_update, process_func)
+    segment_interface = SegmentInterface(10000)
 
     iteration = 0
     timesteps = 0
 
     start_collect = time.perf_counter()
+    trajectories: FlatPPOTrajectory
     for trajectories, ep_returns in iter(runner):
         end_collect = time.perf_counter()
-        timesteps += trajectories["observations"].shape[0]
+        timesteps += trajectories.observations.shape[0]
+        renderings = runner.collect_renderings()
+        segment_interface.add_trajectory(renderings)
 
         # Update policy and value function for multiple epochs using minibatches
         for _ in range(config.optimization_epochs):
+            batch: FlatPPOTrajectory
             for batch in get_batches_from_trajectories(trajectories, config.batch_size):
-                meta = agent.update_step(
-                    batch["observations"],
-                    batch["actions"],
-                    batch["returns"],
-                    batch["advantages"],
-                    batch["log_probs"],
+                step_meta_information = agent.update_step(
+                    batch.observations,
+                    batch.actions,
+                    batch.returns,
+                    batch.advantages,
+                    batch.log_probs,
                 )
                 if agent.steps_trained % config.log_every == 0:
-                    meta_history.add(meta)
-                    meta["pi_lr"], meta["v_lr"] = agent.get_lr()
-                    meta["env_steps"] = timesteps
-                    log_metrics(meta, agent.steps_trained, "updates", writer)
-                    log_metrics(meta_history, agent.steps_trained, "updates", writer)
+                    step_history.add(step_meta_information)
+
+                    step_meta_dict = asdict(step_meta_information)
+                    step_meta_dict["env_steps"] = timesteps
+                    step_meta_dict["pi_lr"], step_meta_dict["v_lr"] = agent.get_lr()
+
+                    log_metrics(step_meta_dict, agent.steps_trained, "updates", writer)
+                    log_metrics(step_history.dict(), agent.steps_trained, "updates", writer)
 
         end_train = time.perf_counter()
         trajectory_meta = {"avg_return": ep_returns.mean().item(), "n_episodes": len(ep_returns)}

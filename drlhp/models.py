@@ -4,7 +4,7 @@ from torch import nn
 
 
 class MLP(torch.nn.Module):
-    def __init__(self, layer_spec):
+    def __init__(self, layer_spec: list[int]):
         super().__init__()
         self.layer_spec = layer_spec
         self.layers = torch.nn.ModuleList()
@@ -12,15 +12,15 @@ class MLP(torch.nn.Module):
         for i in range(1, len(layer_spec) - 1):
             self.layers.append(torch.nn.Linear(layer_spec[i], layer_spec[i + 1]))
 
-    def forward(self, x):
-        for layer in self.layers[:-1]:
+    def forward(self, x: torch.Tensor):  # type: ignore
+        for layer in self.layers[:-1]:  # type: ignore
             x = torch.relu(layer(x))
         x = self.layers[-1](x)
         return x
 
 
 class CNN(nn.Module):
-    def __init__(self, output_dim):
+    def __init__(self, output_dim: int):
         super().__init__()
         self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
@@ -28,7 +28,7 @@ class CNN(nn.Module):
         self.ff1 = nn.Linear(64 * 7 * 7, 512)
         self.ff2 = nn.Linear(512, output_dim)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):  # type: ignore
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))

@@ -9,11 +9,33 @@ exclude = '''
   | env/
 )
 '''
-target-version = ['py38']
+target-version = ['py311']
 
-[tool.isort]
-profile = "black"
-line_length = 120
-force_grid_wrap = 0
-multi_line_output = 3
-include_trailing_comma = true
+
+[tool.ruff]
+line-length = 120
+
+
+[tool.pyright]
+exclude = ["venv", "drlhp/1_simple_pg.py"]
+
+strictListInference = true
+strictDictionaryInference = true
+strictSetInference = true
+reportFunctionMemberAccess = true
+reportUnknownParameterType = true
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = true
+reportInconsistentConstructorType = true
+reportOverlappingOverload = true
+reportConstantRedefinition = true
+reportImportCycles = true
+reportPropertyTypeMismatch = true
+reportMissingTypeArgument = true
+reportUnnecessaryCast = true
+reportUnnecessaryComparison = true
+reportUnnecessaryContains = true
+reportUnusedExpression = true
+reportMatchNotExhaustive = true
+reportShadowedImports = true
+reportPrivateImportUsage = false

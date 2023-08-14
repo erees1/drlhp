@@ -1,10 +1,10 @@
-gymnasium[classic-control]
+gymnasium[classic-control, atari, accept-rom-license, other]
 pandas
 black
 torch
 tensorboard
 Fire
 pre-commit
-isort
 flake8
-pylint
+ruff
+pydantic
