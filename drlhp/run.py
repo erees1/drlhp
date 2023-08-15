@@ -3,12 +3,16 @@ import os
 from dataclasses import asdict
 from datetime import datetime
 from typing import Optional, Any
+from drlhp.config import PPOConfig
+from drlhp.preference_interface import SegmentDatabase
+from drlhp import gym_moving_dot  # noqa
 
 import yaml as yaml
 from fire import Fire
-from ppo import PPOConfig, train_ppo
+from drlhp.reward_predictor import return_ones
+from drlhp.ppo import train_ppo
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
-from utils import seed_everything
+from drlhp.utils import seed_everything
 
 
 def get_agent_config(type: str):
@@ -57,9 +61,10 @@ def make_exp_dir_path(
 def train(
     env: str,
     algo: str,
-    exp_name: str,
     exp_root: str,
+    exp_name: Optional[str] = None,
     help: bool = False,
+    use_reward_func: bool = False,
     **kwargs,  # type: ignore
 ):
     Config = get_agent_config(algo)
@@ -87,16 +92,20 @@ def train(
 
     seed_everything(config.seed)
 
-    if "dqn" in algo:
-        raise NotImplementedError("DQN not implemented")
-    elif "ppo" in algo:
-        train_ppo(
-            env,
-            config,
-            tb_writer,
-        )
+    if use_reward_func:
+        reward_func = return_ones
+        segment_database = SegmentDatabase(size=1000)
     else:
-        raise ValueError(f"Unknown algorithm {algo}")
+        reward_func = None
+        segment_database = None
+
+    train_ppo(
+        env,
+        config,
+        tb_writer,
+        reward_func=reward_func,
+        segment_database=segment_database,
+    )
 
 
 def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:  # type: ignore
@@ -127,15 +136,24 @@ def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], lis
 
 def main(
     algo: str = "ppo",
-    env: str = "CartPole-v1",
+    env: str = "MovingDotDiscreteNoFrameskip-v0",
     exp_name: Optional[str] = None,
     exp_root: str = "./exp",
     config_help: bool = False,
+    use_reward_func: bool = False,
     **kwargs,  # type: ignore
 ):
     param_sets, _ = create_param_grid(kwargs)
     for kwargs in param_sets:
-        train(env, algo, exp_name, exp_root, help=config_help, **kwargs)  # type: ignore
+        train(
+            env=env,
+            algo=algo,
+            exp_name=exp_name,
+            exp_root=exp_root,
+            help=config_help,
+            use_reward_func=use_reward_func,
+            **kwargs,  # type: ignore
+        )
 
 
 if __name__ == "__main__":

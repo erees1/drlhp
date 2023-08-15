@@ -1,52 +1,21 @@
+import random
 import time
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
-from typing import Callable, Generator
+from typing import Callable, Generator, Optional
 
 import numpy as np
-from numpy.typing import NDArray
 import torch
 from gymnasium.vector import VectorEnv
-from utils import Trajectories
-from interface import SegmentInterface
-from models import CNN, MLP
+from numpy.typing import NDArray
 from torch import Tensor
 from torch.nn import functional as F
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
-from utils import (
-    WarmupCA,
-    get_observation_processing_func,
-    get_vec_env,
-    log_metrics,
-    reseed,
-)
+from drlhp.utils import Trajectories, WarmupCA, get_observation_processing_func, get_vec_env, log_metrics, reseed
 
-
-@dataclass
-class PPOConfig:
-    optimizer: str = "AdamW"
-    pi_lr: float = 1e-5
-    v_lr: float = 1e-4
-    lr_warmup_steps: int = 1000
-    actor_hidden_dim: int = 128
-    actor_n_layers: int = 1
-    critic_hidden_dim: int = 128
-    critic_n_layers: int = 1
-    seed: int = 1
-    steps_per_update: int = 640
-    n_timesteps: int = int(1e6)
-    optimization_epochs: int = 10
-    batch_size: int = 32
-    log_every: int = 100
-    entropy_coeff: float = 0.01
-    clip_epsilon: float = 0.2
-    value_loss_coeff: float = 0.5
-    render_every: int = 5
-    n_envs: int = 1
-    gamma: float = 0.99
-    tau: float = 0.95
-    grad_clip: float = 0.5
-    use_async_env: bool = False
+from drlhp.config import PPOConfig
+from drlhp.models import CNN, MLP
+from drlhp.preference_interface import ObservationForPreference, SegmentDatabase
 
 
 @dataclass
@@ -80,17 +49,21 @@ class PPOAgent:
         self.observation_space_size = observation_size
         self.gamma = config.gamma
         self.tau = config.tau
+        if torch.backends.mps.is_available():  # type: ignore
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if "CartPole" in env_name:
             self.critic_layer_sizes = [observation_size] + config.critic_n_layers * [config.critic_hidden_dim] + [1]
             self.actor_layer_sizes = (
                 [observation_size] + config.actor_n_layers * [config.actor_hidden_dim] + [action_space]
             )
-            self.critic = MLP(self.critic_layer_sizes)
-            self.actor = MLP(self.actor_layer_sizes)
+            self.critic = MLP(self.critic_layer_sizes).to(self.device)
+            self.actor = MLP(self.actor_layer_sizes).to(self.device)
         else:
-            self.critic = CNN(1)
-            self.actor = CNN(action_space)
+            self.critic = CNN(1).to(self.device)
+            self.actor = CNN(action_space).to(self.device)
 
         self.entropy_coeff = config.entropy_coeff
         self.clip_epsilon = config.clip_epsilon
@@ -131,8 +104,11 @@ class PPOAgent:
             observations = observations.view(-1, *observations.shape[2:])
             next_observations = next_observations.view(-1, *next_observations.shape[2:])
 
-        values = self.critic(observations).detach().squeeze(-1)  # (trajectory_length, n_envs)
-        next_values = self.critic(next_observations).detach().squeeze(-1)  # (trajectory_length, n_envs)
+        observations = observations.to(self.device)
+        next_observations = next_observations.to(self.device)
+
+        values = self.critic(observations).cpu().detach().squeeze(-1)  # (trajectory_length, n_envs)
+        next_values = self.critic(next_observations).cpu().detach().squeeze(-1)  # (trajectory_length, n_envs)
 
         if len(values.shape) == 1:
             values = values.view(traj_length, n_envs)
@@ -160,9 +136,10 @@ class PPOAgent:
     def act(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         dist = self.get_action_dist(observation)
         action = dist.sample()
-        return action, dist.log_prob(action)
+        return action.cpu(), dist.log_prob(action).cpu()
 
     def get_action_dist(self, observation: Tensor):
+        observation = observation.to(self.device)
         logits_a = self.actor(observation)
         dist = torch.distributions.Categorical(logits=logits_a)
         return dist
@@ -207,6 +184,9 @@ class PPOAgent:
 
     def evaluate(self, observations: Tensor, actions: Tensor) -> tuple[Tensor, Tensor]:
         assert len(actions.shape) == 1
+        observations = observations.to(self.device)
+        actions = actions.to(self.device)
+
         # Get the normalized log probabilities for the observations
         policy_log_probs = self.get_action_dist(observations)
         policy_log_probs = policy_log_probs.log_prob(actions)
@@ -215,7 +195,7 @@ class PPOAgent:
         value_estimates = self.critic(observations).squeeze(-1)
         assert value_estimates.shape == policy_log_probs.shape
 
-        return policy_log_probs, value_estimates
+        return policy_log_probs.cpu(), value_estimates.cpu()
 
 
 @dataclass
@@ -242,18 +222,20 @@ class Runner:
         agent: PPOAgent,
         trajectory_length: int,
         process_func: Callable[[Tensor], Tensor],
+        reward_func: Optional[Callable[[Tensor], Tensor]] = None,
     ):
         self.env = env
         self.agent = agent
         self.trajectory_length = trajectory_length
         self.single_env_length = trajectory_length // env.num_envs
-        self.renderings = []
+        self.renderings: list[list[ObservationForPreference]] = []
+        self.reward_func = reward_func
 
         self.process_func = process_func
 
-    def collect_renderings(self) -> list[NDArray[np.int32]]:
+    def collect_renderings(self) -> list[list[ObservationForPreference]]:
         output = self.renderings
-        self.renderings = []
+        self.renderings = [[]]
         return output
 
     def _collect_trajectories(self) -> Generator[tuple[Trajectories, list[int]], None, None]:
@@ -263,14 +245,23 @@ class Runner:
         observation: NDArray[np.float32]
         observation, _ = self.env.reset(seed=reseed())
         ep_reward = np.array([0.0] * self.env.num_envs)
-        render = True
+        collect_rendering = True
+        start_new_rendering_trajectory = True
         while True:
             action, log_prob = self.agent.act(self.process_func(torch.from_numpy(observation)))
-            next_observation, reward, done, truncation, _ = self.env.step(action.numpy())
+            next_observation, env_reward, done, truncation, _ = self.env.step(action.cpu().numpy())
+            if self.reward_func is not None:
+                reward = self.reward_func(torch.from_numpy(next_observation)).numpy()
+            else:
+                reward = env_reward
 
-            if render:
+            if collect_rendering:
                 rgb = self.env.envs[0].render()  # type: ignore
-                self.renderings.append(rgb)
+                obs_for_pref = ObservationForPreference(rgb, observation[0], action.cpu().numpy()[0], env_reward[0])
+                if start_new_rendering_trajectory:
+                    self.renderings.append([])
+                    start_new_rendering_trajectory = False
+                self.renderings[-1].append(obs_for_pref)
 
             # Store trajectory data
             observations.append(observation)
@@ -286,7 +277,9 @@ class Runner:
             if done.any():
                 # finished envs
                 finished = np.argwhere(done)
-                render = False
+                if done[0]:
+                    # we collect the first full episode of the first environment
+                    start_new_rendering_trajectory = True * random.random() < 0.01
                 for i in finished:
                     ep_returns.append(int(ep_reward[i]))
                     ep_reward[i] = 0
@@ -307,7 +300,7 @@ class Runner:
                 yield trajectories, ep_returns
                 observations, next_observations, actions, rewards, log_probs, dones = [], [], [], [], [], []
                 ep_returns = []
-                render = True
+                collect_rendering = True
 
     def __iter__(self):
         for trajectories, ep_returns in self._collect_trajectories():
@@ -355,10 +348,17 @@ def get_batches_from_trajectories(
         yield FlatPPOTrajectory(**batch)
 
 
-# class PreferenceInterface()
+def train_ppo_with_human_feedback(env_name: str, config: PPOConfig, writer: SummaryWriter):
+    pass
 
 
-def train_ppo(env_name: str, config: PPOConfig, writer: SummaryWriter):
+def train_ppo(
+    env_name: str,
+    config: PPOConfig,
+    writer: SummaryWriter,
+    reward_func: Optional[Callable[[Tensor], Tensor]] = None,
+    segment_database: Optional[SegmentDatabase] = None,
+):
     step_history = StepMetaInformationHistory(max_len=config.log_every)
 
     process_func = get_observation_processing_func(env_name)
@@ -367,8 +367,7 @@ def train_ppo(env_name: str, config: PPOConfig, writer: SummaryWriter):
     observation_size: int = sum(env.single_observation_space.shape)  # type: ignore
     action_space: int = env.single_action_space.n  # type: ignore
     agent = PPOAgent(observation_size, action_space, config, env_name)
-    runner = Runner(env, agent, config.steps_per_update, process_func)
-    segment_interface = SegmentInterface(10000)
+    runner = Runner(env, agent, config.steps_per_update, process_func, reward_func=reward_func)
 
     iteration = 0
     timesteps = 0
@@ -379,7 +378,8 @@ def train_ppo(env_name: str, config: PPOConfig, writer: SummaryWriter):
         end_collect = time.perf_counter()
         timesteps += trajectories.observations.shape[0]
         renderings = runner.collect_renderings()
-        segment_interface.add_trajectory(renderings)
+        if segment_database is not None:
+            [segment_database.add_trajectory(i) for i in renderings]
 
         # Update policy and value function for multiple epochs using minibatches
         for _ in range(config.optimization_epochs):

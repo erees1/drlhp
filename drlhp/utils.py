@@ -98,27 +98,41 @@ def _get_indvidual_env(
     render: bool = False,
 ) -> gym.Env | gym.wrappers.FrameStack:  # type: ignore
     if render:
-        render_mode = "rgb_array"
+        render_mode = "human"
     else:
         render_mode = None
+
     if "Pong" in env_name:
+        kwargs = dict(grayscale_obs=True)
+
         env = gym.make(f"{env_name}", render_mode=render_mode)
         # Atari preprocessing wrapper
         env = gym.wrappers.AtariPreprocessing(  # type: ignore
             env,
-            noop_max=30,
+            noop_max=0,
             frame_skip=4,
             screen_size=84,
             terminal_on_life_loss=False,
-            grayscale_obs=True,
             grayscale_newaxis=False,
             scale_obs=False,
+            **kwargs,
         )
         # Frame stacking
         env: gym.wrappers.FrameStack = gym.wrappers.FrameStack(env, 4)  # type: ignore
         return env
 
-    env: gym.Env = gym.make(env_name, render_mode=render_mode)  # type: ignore
+    elif "MovingDot" in env_name:
+        env: gym.Env = gym.make(  # type: ignore
+            env_name,
+            render_mode=render_mode,
+            size=(84, 84),
+            channel_dim=False,
+            max_steps=300,
+        )
+        env: gym.wrappers.FrameStack = gym.wrappers.FrameStack(env, 4)  # type: ignore
+
+    else:
+        env: gym.Env = gym.make(env_name, render_mode=render_mode)  # type: ignore
     return env
 
 
@@ -150,10 +164,10 @@ def _process_observations(obs: torch.Tensor, add_batch_dim: bool = False, scale:
 
 
 def get_observation_processing_func(env_name: str) -> Callable[[torch.Tensor], torch.Tensor]:
-    if "Pong" in env_name:
-        return partial(_process_observations, scale=True)
-    else:
+    if "Cart" in env_name:
         return _process_observations
+    else:
+        return partial(_process_observations, scale=True)
 
 
 @dataclass
