@@ -1,3 +1,4 @@
+from multiprocessing import Event, Queue
 import random
 import time
 from collections import defaultdict, deque
@@ -10,19 +11,21 @@ from gymnasium.vector import VectorEnv
 from numpy.typing import NDArray
 from torch import Tensor
 from torch.nn import functional as F
-from torch.utils.tensorboard import SummaryWriter  # type: ignore
+from torch.utils.tensorboard import SummaryWriter
+from drlhp.utils import log_config_to_tb, seed_everything  # type: ignore
 from drlhp.utils import Trajectories, WarmupCA, get_observation_processing_func, get_vec_env, log_metrics, reseed
 
 from drlhp.config import PPOConfig
 from drlhp.models import CNN, MLP
-from drlhp.preference_interface import ObservationForPreference, SegmentDatabase
+from drlhp.web_interface.app import ObservationForPreference
+from multiprocessing import Queue
 
 
 @dataclass
 class StepMetaInformation:
     policy_loss: float
     value_loss: float
-    entropy_bonus: float
+    policy_entropy: float
     loss: float
 
 
@@ -84,7 +87,9 @@ class PPOAgent:
         # scheudler is stepped every update so the max num of updates is equal to
         #  config.n_timesteps * config.optimization_epochs / bsz
         scheduler_steps = int(config.n_timesteps * config.optimization_epochs / config.batch_size)
-        self.scheduler = WarmupCA(self.optimizer, scheduler_steps, eta_min=1e-7, warmup_steps=2000, decay_factor=10)
+        self.scheduler = WarmupCA(
+            self.optimizer, scheduler_steps, eta_min=1e-7, warmup_steps=config.lr_warmup_steps, decay_factor=10
+        )
 
         self.steps_trained = 0
 
@@ -161,10 +166,10 @@ class PPOAgent:
         value_loss = F.smooth_l1_loss(values, returns)
 
         # Calculate the entropy bonus
-        entropy_bonus = -(new_log_probs.exp() * new_log_probs).mean()
+        policy_entropy = -(new_log_probs.exp() * new_log_probs).mean()
 
         # Combine the losses and perform a gradient update
-        loss = policy_loss + self.value_loss_coeff * value_loss - self.entropy_coeff * entropy_bonus
+        loss = policy_loss + self.value_loss_coeff * value_loss - self.entropy_coeff * policy_entropy
         self.optimizer.zero_grad()
         loss.backward()
         # clip gradients
@@ -177,7 +182,7 @@ class PPOAgent:
         meta = StepMetaInformation(
             policy_loss=policy_loss.item(),
             value_loss=value_loss.item(),
-            entropy_bonus=entropy_bonus.item(),
+            policy_entropy=policy_entropy.item(),
             loss=loss.item(),
         )
         return meta
@@ -348,17 +353,18 @@ def get_batches_from_trajectories(
         yield FlatPPOTrajectory(**batch)
 
 
-def train_ppo_with_human_feedback(env_name: str, config: PPOConfig, writer: SummaryWriter):
-    pass
-
-
 def train_ppo(
     env_name: str,
     config: PPOConfig,
-    writer: SummaryWriter,
+    tb_dir: str,
     reward_func: Optional[Callable[[Tensor], Tensor]] = None,
-    segment_database: Optional[SegmentDatabase] = None,
+    segment_queue: Optional[Queue] = None,  # type: ignore
+    should_exit: Optional[Event] = None,
 ):
+    seed_everything(config.seed)
+    writer = SummaryWriter(tb_dir)
+    log_config_to_tb(config, writer)
+
     step_history = StepMetaInformationHistory(max_len=config.log_every)
 
     process_func = get_observation_processing_func(env_name)
@@ -378,8 +384,9 @@ def train_ppo(
         end_collect = time.perf_counter()
         timesteps += trajectories.observations.shape[0]
         renderings = runner.collect_renderings()
-        if segment_database is not None:
-            [segment_database.add_trajectory(i) for i in renderings]
+        if segment_queue is not None:
+            print("putting stuff on queue")
+            [segment_queue.put(i) for i in renderings]
 
         # Update policy and value function for multiple epochs using minibatches
         for _ in range(config.optimization_epochs):
@@ -416,3 +423,10 @@ def train_ppo(
             break
 
         start_collect = time.perf_counter()
+
+    env.close()
+
+    if should_exit is not None:
+        should_exit.set()
+    print("finished training")
+    return

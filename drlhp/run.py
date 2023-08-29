@@ -1,34 +1,18 @@
 import itertools
+from multiprocessing import Event, Process, Queue
 import os
 from dataclasses import asdict
 from datetime import datetime
+from time import sleep
 from typing import Optional, Any
 from drlhp.config import PPOConfig
-from drlhp.preference_interface import SegmentDatabase
+from drlhp.web_interface.app import preference_interface_loop
 from drlhp import gym_moving_dot  # noqa
 
 import yaml as yaml
 from fire import Fire
-from drlhp.reward_predictor import return_ones
+from drlhp.reward_predictor import return_ones, reward_interface_loop
 from drlhp.ppo import train_ppo
-from torch.utils.tensorboard import SummaryWriter  # type: ignore
-from drlhp.utils import seed_everything
-
-
-def get_agent_config(type: str):
-    if type == "ppo":
-        return PPOConfig
-    else:
-        raise NotImplementedError(f"Agent type {type} not implemented")
-
-
-def log_config_to_tb(config: PPOConfig, writer: SummaryWriter):
-    for k, v in asdict(config).items():
-        try:
-            v_as_num = float(v)
-            writer.add_scalar(f"z_meta/{k}", v_as_num, 0)
-        except ValueError:
-            writer.add_text(f"z_meta/{k}", v)
 
 
 def make_exp_dir_path(
@@ -58,6 +42,10 @@ def make_exp_dir_path(
     return exp_dir
 
 
+def worker_function(number):
+    print(f"Worker {number} is working.")
+
+
 def train(
     env: str,
     algo: str,
@@ -67,7 +55,7 @@ def train(
     use_reward_func: bool = False,
     **kwargs,  # type: ignore
 ):
-    Config = get_agent_config(algo)
+    Config = PPOConfig
 
     if help:
         print(f"Available parameters for selected algo {algo}:")
@@ -81,8 +69,6 @@ def train(
     exp_dir = make_exp_dir_path(exp_root, env, algo, config, exp_name=exp_name, passed_kwargs=kwargs)
     tb_dir = f"{exp_dir}/tb"
     os.makedirs(tb_dir, exist_ok=True)
-    tb_writer = SummaryWriter(tb_dir)
-    log_config_to_tb(config, tb_writer)
 
     # Log config to exp dir and tensorboard
     with open(f"{exp_dir}/config.yaml", "w") as f:
@@ -90,22 +76,40 @@ def train(
     with open(f"{exp_dir}/env", "w") as f:
         print(env, file=f)
 
-    seed_everything(config.seed)
-
     if use_reward_func:
         reward_func = return_ones
-        segment_database = SegmentDatabase(size=1000)
+        SegmentDatabase(size=1000)
     else:
         reward_func = None
-        segment_database = None
 
-    train_ppo(
-        env,
-        config,
-        tb_writer,
-        reward_func=reward_func,
-        segment_database=segment_database,
-    )
+    if False:
+        train_ppo(
+            env,
+            config,
+            tb_writer,
+            reward_func=reward_func,
+        )
+
+    reward_func = None
+    # set up our processes
+    # 1. process for training / collecting trajectories
+    # # 2. another that recieves them
+    segment_queue = Queue(maxsize=100)
+    preference_queue = Queue(maxsize=100)
+    should_exit = Event()
+
+    policy_process = Process(target=train_ppo, args=(env, config, tb_dir, reward_func, segment_queue, should_exit))
+    preference_process = Process(target=preference_interface_loop, args=(segment_queue, preference_queue, should_exit))
+    reward_process = Process(target=reward_interface_loop, args=(preference_queue, should_exit))
+
+    reward_process.start()
+    preference_process.start()
+    sleep(3)
+    policy_process.start()
+
+    preference_process.join()
+    policy_process.join()
+    reward_process.join()
 
 
 def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:  # type: ignore

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import logging
 import math
 import random
@@ -9,7 +9,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import _LRScheduler
-from torch.utils.tensorboard import SummaryWriter  # type: ignore
+from torch.utils.tensorboard import SummaryWriter
+
+from drlhp.config import PPOConfig  # type: ignore
 
 logger = logging.getLogger()
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
@@ -98,7 +100,7 @@ def _get_indvidual_env(
     render: bool = False,
 ) -> gym.Env | gym.wrappers.FrameStack:  # type: ignore
     if render:
-        render_mode = "human"
+        render_mode = "rgb_array"
     else:
         render_mode = None
 
@@ -178,3 +180,12 @@ class Trajectories:
     rewards: torch.Tensor
     log_probs: torch.Tensor
     dones: torch.Tensor
+
+
+def log_config_to_tb(config: PPOConfig, writer: SummaryWriter):
+    for k, v in asdict(config).items():
+        try:
+            v_as_num = float(v)
+            writer.add_scalar(f"z_meta/{k}", v_as_num, 0)
+        except ValueError:
+            writer.add_text(f"z_meta/{k}", v)

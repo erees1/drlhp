@@ -72,12 +72,11 @@ class MovingDotEnv(gym.Env[NDArray[np.uint8], ActType]):  # type: ignore
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
-        random_start: bool = True,
     ):
         super().reset(seed=seed)
         if self.random_start:
-            x = self.np_random.integers(low=0, high=160)
-            y = self.np_random.integers(low=0, high=210)
+            x = self.np_random.integers(low=0, high=self.size[1])
+            y = self.np_random.integers(low=0, high=self.size[0])
             self.pos = [x, y]
         else:
             self.pos = [0, 0]
