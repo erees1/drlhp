@@ -17,7 +17,7 @@ line-length = 120
 
 
 [tool.pyright]
-exclude = ["venv", "drlhp/1_simple_pg.py"]
+exclude = ["venv", "drlhp/1_simple_pg.py", "tmp"]
 
 strictListInference = true
 strictDictionaryInference = true

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Preference Interface</title>
+  <style>
+    /* Reduce the spacing between the images */
+    div>div {
+      margin-right: 10px;
+      /* Adjust as needed */
+    }
+  </style>
+</head>
+
+<body>
+  <form action="/register_preference" method="post">
+    <div style="display: flex; justify-content: center">
+      <div>
+        <img id="clip1Image" src="data:image/jpeg;base64,{{ clip1_data[0] }}" alt="Clip 1" />
+        <br />
+        <button type="submit" , name="button" , value='clip1' )>Prefer Clip 1</button>
+      </div>
+      <div style="align-self: flex-end">
+        <button type="submit" , name="button" , value='no_preference' )>
+          No Preference
+        </button>
+      </div>
+      <div>
+        <img id="clip2Image" src="data:image/jpeg;base64,{{ clip2_data[0] }}" alt="Clip 2" />
+        <br />
+        <button type="submit" , name="button" , value='clip2' )>Prefer Clip 2</button>
+      </div>
+    </div>
+  </form>
+
+  <script>
+    let clip1Index = 0;
+    let clip2Index = 0;
+    const clip1Data = {{clip1_data | tojson }};
+    const clip2Data = {{clip2_data | tojson }};
+    const frameRate = {{frameRate}};
+    const pauseDuration = 2000;  // 2 seconds pause, adjust as needed
+
+    function displayNextFrame(clipData, imgElementId, index) {
+      const imgElement = document.getElementById(imgElementId);
+      imgElement.src = 'data:image/jpeg;base64,' + clipData[index];
+      index = (index + 1) % clipData.length;
+      return index;
+    }
+
+    function slideshowLoop() {
+      if (clip1Index === clip1Data.length - 1 || clip2Index === clip2Data.length - 1) {
+        // Pause at the end of the clip
+        setTimeout(slideshowLoop, pauseDuration);
+        clip1Index = 0;
+        clip2Index = 0;
+      } else {
+        clip1Index = displayNextFrame(clip1Data, 'clip1Image', clip1Index);
+        clip2Index = displayNextFrame(clip2Data, 'clip2Image', clip2Index);
+        setTimeout(slideshowLoop, frameRate);
+      }
+    }
+    slideshowLoop();
+
+  </script>
+</body>
+
+</html>

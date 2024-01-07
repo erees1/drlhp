@@ -2,33 +2,16 @@ import itertools
 import os
 from dataclasses import asdict
 from datetime import datetime
-from typing import Optional, Any
-from drlhp.config import PPOConfig
-from drlhp.preference_interface import SegmentDatabase
-from drlhp import gym_moving_dot  # noqa
+from multiprocessing import Event, Process, Queue
+from typing import Any, Optional
 
 import yaml as yaml
 from fire import Fire
-from drlhp.reward_predictor import return_ones
-from drlhp.ppo import train_ppo
-from torch.utils.tensorboard import SummaryWriter  # type: ignore
-from drlhp.utils import seed_everything
 
-
-def get_agent_config(type: str):
-    if type == "ppo":
-        return PPOConfig
-    else:
-        raise NotImplementedError(f"Agent type {type} not implemented")
-
-
-def log_config_to_tb(config: PPOConfig, writer: SummaryWriter):
-    for k, v in asdict(config).items():
-        try:
-            v_as_num = float(v)
-            writer.add_scalar(f"z_meta/{k}", v_as_num, 0)
-        except ValueError:
-            writer.add_text(f"z_meta/{k}", v)
+from drlhp.human.loop import preference_interface_loop
+from drlhp.pm.loop import reward_interface_loop
+from drlhp.policy.config import PPOConfig
+from drlhp.policy.ppo import train_ppo
 
 
 def make_exp_dir_path(
@@ -58,6 +41,10 @@ def make_exp_dir_path(
     return exp_dir
 
 
+def worker_function(number: int):
+    print(f"Worker {number} is working.")
+
+
 def train(
     env: str,
     algo: str,
@@ -65,9 +52,10 @@ def train(
     exp_name: Optional[str] = None,
     help: bool = False,
     use_reward_func: bool = False,
+    train_loop_only: bool = False,
     **kwargs,  # type: ignore
 ):
-    Config = get_agent_config(algo)
+    Config = PPOConfig
 
     if help:
         print(f"Available parameters for selected algo {algo}:")
@@ -81,8 +69,6 @@ def train(
     exp_dir = make_exp_dir_path(exp_root, env, algo, config, exp_name=exp_name, passed_kwargs=kwargs)
     tb_dir = f"{exp_dir}/tb"
     os.makedirs(tb_dir, exist_ok=True)
-    tb_writer = SummaryWriter(tb_dir)
-    log_config_to_tb(config, tb_writer)
 
     # Log config to exp dir and tensorboard
     with open(f"{exp_dir}/config.yaml", "w") as f:
@@ -90,22 +76,37 @@ def train(
     with open(f"{exp_dir}/env", "w") as f:
         print(env, file=f)
 
-    seed_everything(config.seed)
+    segment_queue = Queue(maxsize=100)
+    preference_queue = Queue(maxsize=100)
+    should_exit = Event()
 
-    if use_reward_func:
-        reward_func = return_ones
-        segment_database = SegmentDatabase(size=1000)
+    if train_loop_only:
+        train_ppo(env, config, tb_dir, None, segment_queue, should_exit)
+        exit(0)
     else:
-        reward_func = None
-        segment_database = None
+        policy_process = Process(target=train_ppo, args=(env, config, tb_dir, None, segment_queue, should_exit))
+        preference_process = Process(
+            target=preference_interface_loop, args=(segment_queue, preference_queue, should_exit)
+        )
+        reward_process = Process(target=reward_interface_loop, args=(preference_queue, should_exit))
 
-    train_ppo(
-        env,
-        config,
-        tb_writer,
-        reward_func=reward_func,
-        segment_database=segment_database,
-    )
+        reward_process.start()
+        preference_process.start()
+        policy_process.start()
+
+        def join_processes():
+            policy_process.join()
+            preference_process.join()
+            reward_process.join()
+
+        # if any of the processes hit an error or stop, we should exit
+        while True:
+            for process in [policy_process, preference_process, reward_process]:
+                if not process.is_alive():
+                    print(f"Process {process}  died")
+                    should_exit.set()
+                    join_processes()
+                    exit(1)
 
 
 def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:  # type: ignore
@@ -141,6 +142,7 @@ def main(
     exp_root: str = "./exp",
     config_help: bool = False,
     use_reward_func: bool = False,
+    train_loop_only: bool = False,
     **kwargs,  # type: ignore
 ):
     param_sets, _ = create_param_grid(kwargs)
@@ -152,6 +154,7 @@ def main(
             exp_root=exp_root,
             help=config_help,
             use_reward_func=use_reward_func,
+            train_loop_only=train_loop_only,
             **kwargs,  # type: ignore
         )
 

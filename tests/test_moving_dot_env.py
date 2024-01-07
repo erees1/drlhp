@@ -3,7 +3,7 @@ Test all envs implemented over small number of steps
 """
 import pytest
 import gymnasium as gym
-from drlhp import gym_moving_dot  # noqa
+from drlhp.envs import gym_moving_dot  # noqa
 
 ENVS = [
     "MovingDotDiscrete-v0",
@@ -21,10 +21,10 @@ def test_moving_dot_env(env_name: str, render: bool = False):
 
     env.reset()
 
-    for i in range(3):
+    for _ in range(3):
         a = env.action_space.sample()
         print(a)
-        o, r, d, truncation, info = env.step(a)
+        o, r, d, _, info = env.step(a)
         if render:
             env.render()
         print("Obs shape: {}, Action: {}, Reward: {}, Done flag: {}, Info: {}".format(o.shape, a, r, d, info))

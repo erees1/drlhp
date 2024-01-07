@@ -6,12 +6,13 @@ square.
 """
 
 from typing import Any, Optional, TypeVar
+
 import cv2
 import gymnasium as gym
-from gymnasium import spaces
 import numpy as np
-from numpy.typing import NDArray
 import pygame
+from gymnasium import spaces
+from numpy.typing import NDArray
 
 
 class ALE(object):
@@ -72,12 +73,11 @@ class MovingDotEnv(gym.Env[NDArray[np.uint8], ActType]):  # type: ignore
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
-        random_start: bool = True,
     ):
         super().reset(seed=seed)
         if self.random_start:
-            x = self.np_random.integers(low=0, high=160)
-            y = self.np_random.integers(low=0, high=210)
+            x = self.np_random.integers(low=0, high=self.size[1])
+            y = self.np_random.integers(low=0, high=self.size[0])
             self.pos = [x, y]
         else:
             self.pos = [0, 0]
