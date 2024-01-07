@@ -6,12 +6,13 @@ square.
 """
 
 from typing import Any, Optional, TypeVar
+
 import cv2
 import gymnasium as gym
-from gymnasium import spaces
 import numpy as np
-from numpy.typing import NDArray
 import pygame
+from gymnasium import spaces
+from numpy.typing import NDArray
 
 
 class ALE(object):

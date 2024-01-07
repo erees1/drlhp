@@ -1,18 +1,17 @@
 import itertools
-from multiprocessing import Event, Process, Queue
 import os
 from dataclasses import asdict
 from datetime import datetime
-from time import sleep
-from typing import Optional, Any
-from drlhp.config import PPOConfig
-from drlhp.web_interface.app import preference_interface_loop
-from drlhp import gym_moving_dot  # noqa
+from multiprocessing import Event, Process, Queue
+from typing import Any, Optional
 
 import yaml as yaml
 from fire import Fire
-from drlhp.reward_predictor import return_ones, reward_interface_loop
-from drlhp.ppo import train_ppo
+
+from drlhp.human.loop import preference_interface_loop
+from drlhp.pm.loop import reward_interface_loop
+from drlhp.policy.config import PPOConfig
+from drlhp.policy.ppo import train_ppo
 
 
 def make_exp_dir_path(
@@ -42,7 +41,7 @@ def make_exp_dir_path(
     return exp_dir
 
 
-def worker_function(number):
+def worker_function(number: int):
     print(f"Worker {number} is working.")
 
 
@@ -53,6 +52,7 @@ def train(
     exp_name: Optional[str] = None,
     help: bool = False,
     use_reward_func: bool = False,
+    train_loop_only: bool = False,
     **kwargs,  # type: ignore
 ):
     Config = PPOConfig
@@ -76,40 +76,37 @@ def train(
     with open(f"{exp_dir}/env", "w") as f:
         print(env, file=f)
 
-    if use_reward_func:
-        reward_func = return_ones
-        SegmentDatabase(size=1000)
-    else:
-        reward_func = None
-
-    if False:
-        train_ppo(
-            env,
-            config,
-            tb_writer,
-            reward_func=reward_func,
-        )
-
-    reward_func = None
-    # set up our processes
-    # 1. process for training / collecting trajectories
-    # # 2. another that recieves them
     segment_queue = Queue(maxsize=100)
     preference_queue = Queue(maxsize=100)
     should_exit = Event()
 
-    policy_process = Process(target=train_ppo, args=(env, config, tb_dir, reward_func, segment_queue, should_exit))
-    preference_process = Process(target=preference_interface_loop, args=(segment_queue, preference_queue, should_exit))
-    reward_process = Process(target=reward_interface_loop, args=(preference_queue, should_exit))
+    if train_loop_only:
+        train_ppo(env, config, tb_dir, None, segment_queue, should_exit)
+        exit(0)
+    else:
+        policy_process = Process(target=train_ppo, args=(env, config, tb_dir, None, segment_queue, should_exit))
+        preference_process = Process(
+            target=preference_interface_loop, args=(segment_queue, preference_queue, should_exit)
+        )
+        reward_process = Process(target=reward_interface_loop, args=(preference_queue, should_exit))
 
-    reward_process.start()
-    preference_process.start()
-    sleep(3)
-    policy_process.start()
+        reward_process.start()
+        preference_process.start()
+        policy_process.start()
 
-    preference_process.join()
-    policy_process.join()
-    reward_process.join()
+        def join_processes():
+            policy_process.join()
+            preference_process.join()
+            reward_process.join()
+
+        # if any of the processes hit an error or stop, we should exit
+        while True:
+            for process in [policy_process, preference_process, reward_process]:
+                if not process.is_alive():
+                    print(f"Process {process}  died")
+                    should_exit.set()
+                    join_processes()
+                    exit(1)
 
 
 def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:  # type: ignore
@@ -145,6 +142,7 @@ def main(
     exp_root: str = "./exp",
     config_help: bool = False,
     use_reward_func: bool = False,
+    train_loop_only: bool = False,
     **kwargs,  # type: ignore
 ):
     param_sets, _ = create_param_grid(kwargs)
@@ -156,6 +154,7 @@ def main(
             exp_root=exp_root,
             help=config_help,
             use_reward_func=use_reward_func,
+            train_loop_only=train_loop_only,
             **kwargs,  # type: ignore
         )
 

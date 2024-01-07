@@ -19,18 +19,25 @@ class MLP(torch.nn.Module):
         return x
 
 
-class CNN(nn.Module):
+class AtariPolicy(nn.Module):
+    """Architecture infered from "Playing Atari with Deep Reinforcement Learning" (Mnih et al., 2013)"""
+
     def __init__(self, output_dim: int):
         super().__init__()
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.ff1 = nn.Linear(64 * 7 * 7, 512)
-        self.ff2 = nn.Linear(512, output_dim)
+        self.conv1 = nn.Conv2d(4, 16, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=4, stride=2)
+        self.ff1 = nn.Linear(32 * 9 * 9, 256)
+        self.ff2 = nn.Linear(256, output_dim)
 
     def forward(self, x: torch.Tensor):  # type: ignore
+        # x: (batch, 4, 84, 84)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
         x = F.relu(self.ff1(x.view(x.size(0), -1)))
         return self.ff2(x)
+
+
+class RoboticsRewardPredictor(nn.Module):
+    """Architecture infered from "Deep Reinforcement Learning from Human Feedback" (Christiano et al., 2017)"""
+
+    pass

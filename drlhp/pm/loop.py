@@ -1,28 +1,20 @@
-from collections import deque
-from dataclasses import dataclass
-from queue import Empty
 import random
+from collections import deque
+from multiprocessing.synchronize import Event
+from queue import Empty
+
 import torch
-from drlhp.models import CNN, MLP
 
-from drlhp.config import PPOConfig
-from multiprocessing import Queue, Event
-
-
-@dataclass
-class PreferenceExample:
-    obs_actions1: list[tuple[torch.Tensor, int]]
-    obs_actions2: list[tuple[torch.Tensor, int]]
-    env_rewards1: list[float]
-    env_rewards2: list[float]
-    mu: float
+from drlhp.comms import PairedObservations, TypedQueue
+from drlhp.models import MLP, AtariPolicy
+from drlhp.policy.config import PPOConfig
 
 
 class PreferenceDatabase:
     def __init__(self):
         self._examples = deque(maxlen=1000)
 
-    def add_example(self, example: PreferenceExample):
+    def add_example(self, example: PairedObservations):
         self._examples.append(example)
 
 
@@ -46,7 +38,7 @@ class RewardFunction:
             )
             self.model = MLP(self.layer_sizes)
         else:
-            self.model = CNN(1)
+            self.model = AtariPolicy(1)
 
     def train_on_oracle(self, preference_database: PreferenceDatabase):
         breakpoint()
@@ -58,11 +50,14 @@ class RewardFunction:
         for example in data:
             pass
 
-    def train_on_prefernces():
+    def train_on_prefernces(self):
         pass
 
 
-def reward_interface_loop(input_queue: Queue, should_exit: Event):  # type: ignore
+def reward_interface_loop(
+    input_queue: TypedQueue[PairedObservations],
+    should_exit: Event,
+):
     # Start the Flask app and pass the input_queue
     PreferenceDatabase()
     print("Reward model started")
