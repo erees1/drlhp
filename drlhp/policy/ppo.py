@@ -2,12 +2,14 @@ import logging
 import random
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable, Generator
 from dataclasses import asdict, dataclass
-from multiprocessing import Event, Queue
-from typing import Callable, Generator, Optional
+from multiprocessing.synchronize import Event
+from typing import Any
 
 import numpy as np
 import torch
+from gymnasium import Space
 from gymnasium.vector import VectorEnv
 from numpy.typing import NDArray
 from slist import Slist
@@ -15,13 +17,17 @@ from torch import Tensor
 from torch.nn import functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-from drlhp.comms import Observation
+from drlhp.comms import Observation, TypedQueue
 from drlhp.envs.util import get_vec_env
 from drlhp.models import MLP, AtariPolicy
 from drlhp.policy.config import PPOConfig
 from drlhp.utils.logging import log_config_to_tb, log_metrics, setup_logger
 from drlhp.utils.optimizer import WarmupCA
-from drlhp.utils.utils import get_observation_processing_func, reseed, seed_everything  # type: ignore
+from drlhp.utils.utils import (  # type: ignore
+    get_observation_processing_func,
+    reseed,
+    seed_everything,
+)
 
 
 @dataclass
@@ -75,7 +81,7 @@ def get_batches_from_trajectories(
 
 
 class PPOAgent:
-    def __init__(self, observation_size: int, action_space: int, config: PPOConfig, env_name: str):
+    def __init__(self, observation_size: int, action_space: Space[Any], config: PPOConfig, env_name: str):
         self.config = config
         self.env_name = env_name
         self.action_space_size = action_space
@@ -255,7 +261,7 @@ class Runner:
         agent: PPOAgent,
         trajectory_length_per_env: int,
         process_func: Callable[[Tensor], Tensor],
-        reward_func: Optional[Callable[[Tensor], Tensor]] = None,
+        reward_func: Callable[[Tensor], Tensor] | None = None,
     ):
         self.env = env
         self.agent = agent
@@ -379,9 +385,9 @@ def train_ppo(
     env_name: str,
     config: PPOConfig,
     tb_dir: str,
-    reward_func: Optional[Callable[[Tensor], Tensor]] = None,
-    segment_queue: Optional[Queue] = None,  # type: ignore
-    should_exit: Optional[Event] = None,  # type: ignore
+    reward_func: Callable[[Tensor], Tensor] | None = None,
+    segment_queue: TypedQueue[Slist[Observation]] | None = None,
+    should_exit: Event | None = None,
 ):
     seed_everything(config.seed)
     writer = SummaryWriter(tb_dir)
@@ -394,7 +400,8 @@ def train_ppo(
 
     env = get_vec_env(env_name, n_envs=config.n_envs, render=True, use_async=config.use_async_env)
     observation_size: int = sum(env.single_observation_space.shape)  # type: ignore
-    action_space: int = env.single_action_space.n  # type: ignore
+    action_space = env.single_action_space
+    breakpoint()
     agent = PPOAgent(observation_size, action_space, config, env_name)
     runner = Runner(env, agent, config.steps_per_update_per_env, process_func, reward_func=reward_func)
 
@@ -403,7 +410,7 @@ def train_ppo(
 
     start_collect = time.perf_counter()
     trajectories: FlatPPOTrajectory
-    for trajectories, ep_returns in iter(runner):
+    for iteration, (trajectories, ep_returns) in enumerate(iter(runner)):
         end_collect = time.perf_counter()
         timesteps += trajectories.observations.shape[0]
         renderings = runner.collect_renderings()
@@ -441,7 +448,6 @@ def train_ppo(
         trajectory_meta["env_steps"] = timesteps
         log_metrics(logger, trajectory_meta, iteration, "iter", writer=writer, log=True)
 
-        iteration += 1
         if timesteps > config.n_timesteps:
             break
 

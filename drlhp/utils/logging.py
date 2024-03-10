@@ -1,13 +1,10 @@
 import logging
 import math
-from typing import Optional
-from drlhp.policy.config import PPOConfig
-
+from dataclasses import asdict
 
 from torch.utils.tensorboard import SummaryWriter
 
-
-from dataclasses import asdict
+from drlhp.policy.config import PPOConfig
 
 
 def log_config_to_tb(config: PPOConfig, writer: SummaryWriter):
@@ -24,7 +21,7 @@ def log_metrics(
     meta: dict[str, float | int],
     step: int,
     prefix: str,
-    writer: Optional[SummaryWriter] = None,
+    writer: SummaryWriter | None = None,
     log: bool = False,
 ):
     if log:

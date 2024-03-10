@@ -1,14 +1,28 @@
 .DEFAULT_GOAL=all
 PYTHONFILES := $(wildcard *.py)
 
-all: env check
+.PHONY: install
+install:
+	pip install -e .
 
-.PHONY: env
-env:
-	pip install --upgrade pip
-	pip install -r requirements.txt
-	[ -d .git ] && pre-commit install || echo "no git repo to install hooks"
+.PHONY: install-dev
+install-dev:
+	pip install -e .[dev]
+	pre-commit install
+	
+.PHONY: format
+format:
+	ruff check --fix-only .
+	ruff format .
 
 .PHONY: check
 check:
 	SKIP=no-commit-to-branch pre-commit run -a --hook-stage commit
+
+.PHONY: test
+test:
+	python -m pytest
+
+.PHONY: test-all
+test-all:
+	python -m pytest --runslow

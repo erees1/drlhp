@@ -1,7 +1,8 @@
 import base64
-from numpy.typing import NDArray
-import numpy as np
+
 import cv2
+import numpy as np
+from numpy.typing import NDArray
 
 
 def numpy_to_base64(img_array: NDArray[np.uint8]) -> str:

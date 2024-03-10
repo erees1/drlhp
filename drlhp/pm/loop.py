@@ -41,13 +41,12 @@ class RewardFunction:
             self.model = AtariPolicy(1)
 
     def train_on_oracle(self, preference_database: PreferenceDatabase):
-        breakpoint()
         data = preference_database._examples
         random.shuffle(data)
 
         # batch the data
 
-        for example in data:
+        for _ in data:
             pass
 
     def train_on_prefernces(self):

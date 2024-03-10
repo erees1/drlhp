@@ -1,8 +1,10 @@
 """
 Test all envs implemented over small number of steps
 """
-import pytest
+
 import gymnasium as gym
+import pytest
+
 from drlhp.envs import gym_moving_dot  # noqa
 
 ENVS = [
@@ -15,7 +17,7 @@ ENVS = [
 
 @pytest.mark.parametrize("env_name", ENVS)
 def test_moving_dot_env(env_name: str, render: bool = False):
-    print("=== Test: {} ===".format(env_name))
+    print(f"=== Test: {env_name} ===")
 
     env = gym.make(env_name, render_mode="human")
 
@@ -27,7 +29,7 @@ def test_moving_dot_env(env_name: str, render: bool = False):
         o, r, d, _, info = env.step(a)
         if render:
             env.render()
-        print("Obs shape: {}, Action: {}, Reward: {}, Done flag: {}, Info: {}".format(o.shape, a, r, d, info))
+        print(f"Obs shape: {o.shape}, Action: {a}, Reward: {r}, Done flag: {d}, Info: {info}")
 
     env.close()
     del env

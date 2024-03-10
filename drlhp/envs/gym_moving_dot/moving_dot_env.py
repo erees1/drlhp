@@ -5,7 +5,7 @@ square.
 # Taken from: https://github.com/mrahtz/gym-moving-dot/blob/master/gym_moving_dot/envs/moving_dot_env.py
 """
 
-from typing import Any, Optional, TypeVar
+from typing import Any, TypeVar
 
 import cv2
 import gymnasium as gym
@@ -15,7 +15,7 @@ from gymnasium import spaces
 from numpy.typing import NDArray
 
 
-class ALE(object):
+class ALE:
     def __init__(self):
         self.lives = lambda: 0
 
@@ -104,7 +104,7 @@ class MovingDotEnv(gym.Env[NDArray[np.uint8], ActType]):  # type: ignore
             ob[y - h : y + h, x - w : x + w] = 255
         return ob
 
-    def _render_frame(self) -> Optional[NDArray[np.uint8]]:
+    def _render_frame(self) -> NDArray[np.uint8] | None:
         if self.window is None and self.render_mode == "human":
             pygame.init()
             pygame.display.init()
@@ -142,10 +142,7 @@ class MovingDotEnv(gym.Env[NDArray[np.uint8], ActType]):  # type: ignore
         ob = self._get_ob()
 
         self.steps += 1
-        if self.steps < self.max_steps:
-            episode_over = False
-        else:
-            episode_over = True
+        episode_over = not self.steps < self.max_steps
 
         dist1 = np.linalg.norm(prev_pos - self.centre)
         dist2 = np.linalg.norm(self.pos - self.centre)
@@ -165,7 +162,7 @@ class MovingDotEnv(gym.Env[NDArray[np.uint8], ActType]):  # type: ignore
         raise NotImplementedError
 
     # Based on gym's atari_env.py
-    def render(self, mode="human", close=False) -> Optional[NDArray[np.uint8]]:
+    def render(self, mode="human", close=False) -> NDArray[np.uint8] | None:
         if close:
             if self.window is not None:
                 pygame.quit()
@@ -189,7 +186,7 @@ class MovingDotDiscreteEnv(MovingDotEnv[np.int64]):
         max_steps=1000,
         random_start=True,
     ):
-        super(MovingDotDiscreteEnv, self).__init__(
+        super().__init__(
             render_mode=render_mode, channel_dim=channel_dim, size=size, max_steps=max_steps, random_start=random_start
         )
         self.action_space: spaces.Space[np.int64] = spaces.Discrete(5)
@@ -226,7 +223,7 @@ class MovingDotContinuousEnv(MovingDotEnv[NDArray[np.float32]]):
         max_steps=1000,
         random_start=True,
     ):  # moving_thd is empirically determined
-        super(MovingDotContinuousEnv, self).__init__(
+        super().__init__(
             render_mode=render_mode, channel_dim=channel_dim, size=size, max_steps=max_steps, random_start=random_start
         )
 

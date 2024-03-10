@@ -6,7 +6,7 @@ env = gym.make("Hopper-v4", render_mode="human")
 # Set render mode to humnan
 
 # Run for a few episodes
-for episode in range(5):
+for _ in range(5):
     observation = env.reset()
     done = False
     while not done:
@@ -17,7 +17,7 @@ for episode in range(5):
         action = env.action_space.sample()
         observation, reward, terminated, truncated, info = env.step(action)
         print(observation)
-        breakpoint()
+        break
 
 # Close the environment
 env.close()

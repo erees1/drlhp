@@ -2,12 +2,13 @@ import itertools
 import os
 from dataclasses import asdict
 from datetime import datetime
-from multiprocessing import Event, Process, Queue
-from typing import Any, Optional
+from multiprocessing import Event, Process
+from typing import Any
 
 import yaml as yaml
 from fire import Fire
 
+from drlhp.comms import TypedQueue
 from drlhp.human.loop import preference_interface_loop
 from drlhp.pm.loop import reward_interface_loop
 from drlhp.policy.config import PPOConfig
@@ -19,8 +20,8 @@ def make_exp_dir_path(
     env: str,
     algo: str,
     config: PPOConfig,
-    exp_name: Optional[str] = None,
-    passed_kwargs: Optional[dict[str, Any]] = None,
+    exp_name: str | None = None,
+    passed_kwargs: dict[str, Any] | None = None,
 ):
     if passed_kwargs is None:
         passed_kwargs = {}
@@ -49,7 +50,7 @@ def train(
     env: str,
     algo: str,
     exp_root: str,
-    exp_name: Optional[str] = None,
+    exp_name: str | None = None,
     help: bool = False,
     use_reward_func: bool = False,
     train_loop_only: bool = False,
@@ -59,7 +60,7 @@ def train(
 
     if help:
         print(f"Available parameters for selected algo {algo}:")
-        for field in Config.__annotations__.keys():
+        for field in Config.__annotations__:
             print(f"{field}: default: {getattr(Config, field)}")
         exit(0)
 
@@ -76,8 +77,8 @@ def train(
     with open(f"{exp_dir}/env", "w") as f:
         print(env, file=f)
 
-    segment_queue = Queue(maxsize=100)
-    preference_queue = Queue(maxsize=100)
+    segment_queue = TypedQueue(maxsize=100)
+    preference_queue = TypedQueue(maxsize=100)
     should_exit = Event()
 
     if train_loop_only:
@@ -138,7 +139,7 @@ def create_param_grid(kwargs: dict[str, Any]) -> tuple[list[dict[str, Any]], lis
 def main(
     algo: str = "ppo",
     env: str = "MovingDotDiscreteNoFrameskip-v0",
-    exp_name: Optional[str] = None,
+    exp_name: str | None = None,
     exp_root: str = "./exp",
     config_help: bool = False,
     use_reward_func: bool = False,

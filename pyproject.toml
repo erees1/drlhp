@@ -1,23 +1,68 @@
-[tool.black]
-line-length = 120
-exclude = '''
-(
-    venv*
-  | \.*
-  | __pycache__
-  | Dockerfile
-  | env/
-)
-'''
-target-version = ['py311']
+[project]
+name = "drlhp"
+version = "0.0.1"
+description = "Implementation of Deep Reinforcement Learning From Human Preferences"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "gymnasium@git+https://github.com/Farama-Foundation/Gymnasium",
+    "mujoco",
+    "pandas",
+    "black",
+    "torch",
+    "tensorboard",
+    "Fire",
+    "pre-commit",
+    "flake8",
+    "ruff",
+    "pydantic",
+    "pytest",
+    "Flask",
+    "streamlit",
+    "slist",
+    "opencv-python",
+]
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.3.1",
+    "pyright>=1.1.3",
+    "pre-commit",
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["drlhp"]
 
 [tool.ruff]
 line-length = 120
+fix = true
 
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+
+[tool.ruff.format]
+# Enable reformatting of code snippets in docstrings.
+docstring-code-format = true
 
 [tool.pyright]
-exclude = ["venv", "drlhp/1_simple_pg.py", "tmp"]
+include = ["drlhp", "tests"]
 
 strictListInference = true
 strictDictionaryInference = true

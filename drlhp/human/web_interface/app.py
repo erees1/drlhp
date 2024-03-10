@@ -1,12 +1,12 @@
 """
-This module contains the implementation of the Human Interface, which is a flask app 
+This module contains the implementation of the Human Interface, which is a flask app
 that shows two clips from a database and threading
 once a preference is recieved, stick it back into the database
 """
 
 from collections import deque
+from collections.abc import Callable
 from time import time
-from typing import Callable, Optional
 
 import numpy as np
 from flask import Flask, redirect, render_template, request
@@ -26,7 +26,7 @@ class FlaskWrapper:
         viewer_fps: int = 30,
     ):
         self.app = Flask(__name__)
-        self.paired_observations: Optional[PairedObservations] = None
+        self.paired_observations: PairedObservations | None = None
 
         # Assuming you have configurations you want to use
         # self.app.config["some_key"] = "some_value"

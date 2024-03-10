@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from multiprocessing import Queue
-from typing import Generic, Optional, TypeVar
+from typing import Generic, TypeVar
 
 import numpy as np
 import torch
@@ -11,13 +11,13 @@ T = TypeVar("T")
 
 
 class TypedQueue(Generic[T]):
-    def __init__(self):
-        self.queue = Queue()
+    def __init__(self, maxsize: int = 0):
+        self.queue = Queue(maxsize=maxsize)
 
     def put(self, item: T):
         self.queue.put(item)
 
-    def get(self, timeout: Optional[float] = None) -> T:
+    def get(self, timeout: float | None = None) -> T:
         return self.queue.get(timeout=timeout)
 
 
@@ -41,4 +41,4 @@ class Observation:
 class PairedObservations:
     obs_1: Slist[Observation]
     obs_2: Slist[Observation]
-    preference: Optional[float] = None
+    preference: float | None = None
